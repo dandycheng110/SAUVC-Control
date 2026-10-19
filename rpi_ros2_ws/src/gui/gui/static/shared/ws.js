@@ -30,7 +30,9 @@ class GuiSocket {
     }
 
     connect() {
-        const url = this.protocol.makeWebsocketUrl(window.location.hostname);
+        // host 而不是 hostname：頁面經 SSH 通道換到別的埠（例如 :18080）時，
+        // hostname 會丟掉埠號、去連本機的 80，結果永遠 "Link down"。
+        const url = this.protocol.makeWebsocketUrl(window.location.host);
         this.socket = new WebSocket(url, this.protocol.websocketSubprotocol);
 
         this.socket.onopen = () => {

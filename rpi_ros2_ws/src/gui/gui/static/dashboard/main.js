@@ -17,12 +17,17 @@ const STALE_MS = {
     [protocol.topics.systemManagerMode]: 8000,
 };
 
+// web_video_server 的埠可用 ?camera_port=NNNN 覆寫。經 SSH 通道遠端看時，
+// 8080 通常被轉到別的本機埠；不覆寫的話影像會去連看的人自己電腦的 8080。
+const CAMERA_PORT_OVERRIDE =
+    new URLSearchParams(window.location.search).get("camera_port");
+
 const state = {
     mode: null,
     targetDepth: 0,
     killed: null,
     cameras: [],
-    cameraPort: 8080,
+    cameraPort: CAMERA_PORT_OVERRIDE ?? 8080,
     mainCameraId: null,
     mission: null,
 };
@@ -523,7 +528,7 @@ socket.onTopic(protocol.topics.missionStatus, (status) => {
 });
 
 socket.onTopic(protocol.topics.cameraSources, (payload) => {
-    state.cameraPort = payload?.port ?? 8080;
+    state.cameraPort = CAMERA_PORT_OVERRIDE ?? payload?.port ?? 8080;
     state.cameras = payload?.sources ?? [];
     renderCameras();
 });
