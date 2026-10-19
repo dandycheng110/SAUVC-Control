@@ -1,4 +1,5 @@
 import rclpy
+from geometry_msgs.msg import Quaternion
 from geometry_msgs.msg import Wrench
 from rclpy.node import Node
 from std_msgs.msg import Bool
@@ -23,14 +24,23 @@ class SupervisorNode(Node):
         self.declare_parameter("require_thrusters_enabled", True)
         self.declare_parameter("depth_sensor_timeout_s", 1.0)
         self.declare_parameter("decision_timeout_s", 1.0)
+        self.declare_parameter("orientation_timeout_s", 1.0)
         self.declare_parameter("auto_flash_stm32_on_startup", True)
         self.declare_parameter("stm32_flash_service", "/flash_stm32")
         self.declare_parameter("stm32_flash_service_timeout_s", 15.0)
 
         # 有 lifecycle 節點要啟停的群組。
+        self._heading_group = "heading_control"
         self._controller_groups = {
             "depth_control": [
                 "depth_pid_controller_node",
+            ],
+            # 航向保持是深度保持之上的輔助，不是獨立模式：只能在 depth_control
+            # 啟用、且沒有自主時打開（見 _set_heading_hold）。所以它不進
+            # ControlMode —— system_manager/mode 的字串維持原樣，自主端與 GUI
+            # 既有的判斷都不受影響，開關狀態另外發在 system_manager/heading_hold。
+            self._heading_group: [
+                "heading_hold_node",
             ],
         }
         # autonomous 沒有自己的 lifecycle 節點 —— 它放行的是 Autonomy 堆疊直接
@@ -59,11 +69,14 @@ class SupervisorNode(Node):
 
         self._mode_publisher = self.create_publisher(String, "system_manager/mode", 10)
         self._status_publisher = self.create_publisher(String, "system_manager/status", 10)
+        self._heading_hold_publisher = self.create_publisher(
+            Bool, "system_manager/heading_hold", 10)
 
         self.create_subscription(Bool, "sensors/killed", self._on_killed, 10)
         self.create_subscription(Bool, "thrusters/enabled", self._on_thrusters_enabled, 10)
         self.create_subscription(Float32, "sensors/depth_m", self._on_depth_float32, 10)
         self.create_subscription(Float64, "state/depth_m", self._on_depth_float64, 10)
+        self.create_subscription(Quaternion, "state/orientation", self._on_orientation, 10)
         self.create_subscription(
             Wrench,
             "control/wrench_sources/decision",
@@ -82,6 +95,16 @@ class SupervisorNode(Node):
             Trigger,
             "system_manager/disable/depth_hold",
             self._disable_depth_hold,
+        )
+        self.create_service(
+            Trigger,
+            "system_manager/set_mode/heading_hold",
+            self._set_heading_hold,
+        )
+        self.create_service(
+            Trigger,
+            "system_manager/disable/heading_hold",
+            self._disable_heading_hold,
         )
         self.create_service(
             Trigger,
@@ -120,6 +143,10 @@ class SupervisorNode(Node):
     def _on_decision_wrench(self, msg: Wrench):
         del msg
         self._safety.update_decision()
+
+    def _on_orientation(self, msg: Quaternion):
+        del msg
+        self._safety.update_orientation()
 
     def _reject(self, response, reason: str):
         """拒絕一次模式請求，不改動載具狀態。
@@ -198,6 +225,8 @@ class SupervisorNode(Node):
         return response
 
     def _disable_depth_hold(self, request, response):
+        # 航向保持掛在深度保持之上，一起關。
+        self._drop_heading_hold()
         self._disable_group("depth_control")
         self._active_controller_groups.discard("depth_control")
         self._refresh_mode_from_active_groups()
@@ -216,6 +245,11 @@ class SupervisorNode(Node):
         if not ok:
             return self._reject(response, reason)
 
+        # 自主端自己發 torque.z。航向保持留著的話，兩個來源在同一條匯流排上
+        # 拉扯，誰也轉不到想要的方向。
+        if self._heading_group in self._active_controller_groups:
+            self.get_logger().warning("Autonomy takes over yaw; dropping heading hold")
+            self._drop_heading_hold()
         self._active_controller_groups.add(self._autonomous_group)
         self._refresh_mode_from_active_groups()
         response.success = True
@@ -228,6 +262,44 @@ class SupervisorNode(Node):
         response.success = True
         response.message = self._status
         return response
+
+    def _set_heading_hold(self, request, response):
+        fault_reason = self._fault_latched()
+        if fault_reason:
+            return self._reject(response, fault_reason)
+
+        ok, reason = self._safety_ready()
+        if ok:
+            ok, reason = self._safety.orientation_ready()
+        if not ok:
+            return self._reject(response, reason)
+        if "depth_control" not in self._active_controller_groups:
+            return self._reject(response, "Heading hold needs Depth hold on first")
+        if self._autonomous_group in self._active_controller_groups:
+            return self._reject(
+                response, "Autonomy is steering; heading hold would fight it")
+
+        if self._heading_group not in self._active_controller_groups:
+            self._reset_group(self._heading_group)
+            self._enable_group(self._heading_group)
+            self._active_controller_groups.add(self._heading_group)
+        self._refresh_mode_from_active_groups()
+        response.success = True
+        response.message = self._status
+        return response
+
+    def _disable_heading_hold(self, request, response):
+        self._drop_heading_hold()
+        self._refresh_mode_from_active_groups()
+        response.success = True
+        response.message = self._status
+        return response
+
+    def _drop_heading_hold(self):
+        if self._heading_group not in self._active_controller_groups:
+            return
+        self._disable_group(self._heading_group)
+        self._active_controller_groups.discard(self._heading_group)
 
     def _reset_controllers(self, request, response):
         self._controllers.reset_all()
@@ -287,7 +359,9 @@ class SupervisorNode(Node):
             self._status = "Autonomy active"
         elif depth_active:
             self._mode = ControlMode.DEPTH_HOLD
-            self._status = "Depth hold active"
+            self._status = ("Depth and heading hold active"
+                            if self._heading_group in self._active_controller_groups
+                            else "Depth hold active")
         else:
             self._mode = ControlMode.SAFE_DISABLED
             self._status = "No controller groups active"
@@ -324,6 +398,18 @@ class SupervisorNode(Node):
             ok, reason = self._decision_ready()
             if not ok:
                 self._enter_fault(reason)
+                return
+
+        # 姿態斷了只關航向保持，不進 FAULT：深度保持還守得住，載具沒有危險，
+        # 為了一個輔助功能把整台停下來（清掉所有群組、推力歸零）代價太高。
+        # heading_hold_node 自己也會在姿態過期時輸出零。
+        if self._heading_group in self._active_controller_groups:
+            ok, reason = self._safety.orientation_ready()
+            if not ok:
+                self.get_logger().warning(f"Dropping heading hold: {reason}")
+                self._drop_heading_hold()
+                self._refresh_mode_from_active_groups()
+                self._status = f"Heading hold dropped: {reason}"
 
     def _enable_group(self, group: str):
         self._controllers.enable_group(group)
@@ -354,6 +440,10 @@ class SupervisorNode(Node):
         status_msg = String()
         status_msg.data = self._status
         self._status_publisher.publish(status_msg)
+
+        heading_msg = Bool()
+        heading_msg.data = self._heading_group in self._active_controller_groups
+        self._heading_hold_publisher.publish(heading_msg)
 
 
 def main(args=None):

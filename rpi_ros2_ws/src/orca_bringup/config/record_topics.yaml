@@ -32,13 +32,18 @@ topics:
   # --- 轉換後的狀態 ---
   - state/depth_m
   - state/orientation
+  - state/heading_deg
+  - state/heading_target_deg
 
   # --- 控制目標 ---
   - control/targets/depth_m
+  - control/targets/heading_deg
+  - control/targets/yaw_rate_dps
 
   # --- Wrench 匯流排：每個來源都要，才能事後拆解合力的組成 ---
   - control/wrench_sources/gui
   - control/wrench_sources/depth
+  - control/wrench_sources/heading
   - control/wrench_sources/decision
   - control/wrench_sources/bottom_camera
   - control/wrench_command
@@ -63,6 +68,7 @@ topics:
   # --- 系統狀態 ---
   - system_manager/mode
   - system_manager/status
+  - system_manager/heading_hold
 
 # -----------------------------------------------------------------------------
 # 絕對路徑的 topic（不加 namespace 前綴）。

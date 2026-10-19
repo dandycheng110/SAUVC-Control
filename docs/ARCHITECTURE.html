@@ -838,7 +838,11 @@ h2:hover .anchor, h3:hover .anchor{ opacity:1; }
 <table>
 <thead><tr><th>Topic / Service</th><th>型別</th><th>發布</th><th>訂閱</th></tr></thead>
 <tbody>
-<tr><td><code class="t">control/wrench_sources/{gui,depth,decision}</code></td><td><code>Wrench</code></td><td>各控制來源</td><td><code>wrench_sum_node</code></td></tr>
+<tr><td><code class="t">control/wrench_sources/{gui,depth,heading,decision}</code></td><td><code>Wrench</code></td><td>各控制來源</td><td><code>wrench_sum_node</code></td></tr>
+<tr><td><code class="t">control/targets/yaw_rate_dps</code></td><td><code>Float64</code></td><td>GUI（航向保持開著時的左右鍵）</td><td><code>heading_hold_node</code></td></tr>
+<tr><td><code class="t">control/targets/heading_deg</code></td><td><code>Float64</code></td><td>GUI（<code>[</code> <code>]</code> 鍵、Space）</td><td><code>heading_hold_node</code></td></tr>
+<tr><td><code class="t">state/heading_deg</code>、<code class="t">state/heading_target_deg</code></td><td><code>Float64</code></td><td><code>heading_hold_node</code>（未知時為 NaN）</td><td>GUI</td></tr>
+<tr><td><code class="t">system_manager/heading_hold</code></td><td><code>Bool</code></td><td><code>supervisor_node</code></td><td>GUI</td></tr>
 <tr><td><code class="t">control/wrench_command</code></td><td><code>Wrench</code></td><td><code>wrench_sum_node</code></td><td>分配節點</td></tr>
 <tr><td><code class="t">thrusters/thruster_{0..7}/force_N</code></td><td><code>Float64</code></td><td>分配節點</td><td>力→PWM 節點 / <code>ros_gz_bridge</code></td></tr>
 <tr><td><code class="t">thrusters/pwm_us</code></td><td><code>Int32MultiArray</code></td><td>力→PWM 節點、初始化節點</td><td>STM32</td></tr>
@@ -887,6 +891,13 @@ lifecycle 轉換；supervisor 才是決定「現在允許哪些節點進入 acti
 只需要 <code>wrench_sum_node</code> 是 active，外加「決策來源還活著」這個安全前提。
 <code>AUTONOMOUS</code> 與 <code>DEPTH_HOLD</code> 可以疊加。</p>
 
+<p><b>航向保持</b>（<code>heading_control</code> 群組，節點 <code>heading_hold_node</code>）是疊在
+<code>DEPTH_HOLD</code> 上的輔助，<b>不是新的模式</b>：<code>system_manager/mode</code> 的字串不變，
+開關狀態另外發在 <code class="t">system_manager/heading_hold</code>。只能在深度保持開著、而且沒有自主時打開；
+關掉深度保持會一起關掉它，開自主會先把它關掉（自主端自己發 <code>torque.z</code>，兩個來源會互相拉扯）。
+開著時 GUI 的左右鍵送的是<b>轉速</b>（<code class="t">control/targets/yaw_rate_dps</code>）而不是力矩，
+放手時目標當場停住；細節見 <code>control/heading_hold_node.py</code>。上面的架構圖還沒畫進這個節點。</p>
+
 <div class="callout note">
   <div class="ct">在有 AUTONOMOUS 模式之前</div>
   <p>要讓決策層的指令到得了推進器，只能先進 <code>MANUAL</code>（語意矛盾，而且會關掉深度 PID）
@@ -904,6 +915,7 @@ lifecycle 轉換；supervisor 才是決定「現在允許哪些節點進入 acti
 <tr><td>推進器已啟用</td><td><code>require_thrusters_enabled</code></td><td>全部</td></tr>
 <tr><td>深度資料未逾時</td><td><code>depth_sensor_timeout_s</code></td><td><code>DEPTH_HOLD</code></td></tr>
 <tr><td>decision wrench 未逾時</td><td><code>decision_timeout_s</code></td><td><code>AUTONOMOUS</code></td></tr>
+<tr><td>IMU 姿態未逾時</td><td><code>orientation_timeout_s</code></td><td>航向保持（逾時只關航向保持，不進 FAULT）</td></tr>
 </tbody>
 </table>
 </div>

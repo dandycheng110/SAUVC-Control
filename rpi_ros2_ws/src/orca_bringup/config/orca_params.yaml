@@ -53,6 +53,37 @@
     # 是否依 IMU 姿態把下沉力轉到載具座標系。false 時直接當作 +z。
     use_sink_force_direction: false
 
+# --- 航向保持 -----------------------------------------------------------------
+# 只在深度保持之上、由操作者打開時運作（supervisor 的 heading_control 群組）。
+# 開著時 GUI 的左右鍵送轉速指令（control/targets/yaw_rate_dps），放手時目標
+# 當場停住。細節見 control/heading_hold_node.py。
+/**/heading_hold_node:
+  ros__parameters:
+    # 熱調。單位：P 是 N·m/rad，D 是 N·m/(rad/s)，限幅是 N·m。
+    proportional_gain: 20.0
+    integral_gain: 2.0
+    derivative_gain: 10.0
+    # 對量到的轉速做平滑，0 = 不平滑。公式同深度 PID。
+    derivative_smoothing_factor: 0.0
+    # 4 顆水平推進器 × 15 N × 力臂約 0.395 m ≈ 23.7 N·m 是轉向的物理上限。
+    # 不給滿：轉向吃掉全部推力時，saturation_mode: scale 會把前進與側移一起縮小。
+    output_limit: 15.0
+    integral_limit: 5.0
+    # 熱調。誤差小於這個角度才累積積分，大角度轉向時不累積（避免到位後反推）。
+    integral_zone_deg: 10.0
+    # 熱調。轉速指令推著目標走時，目標最多領先實際航向多少度。
+    max_target_lead_deg: 30.0
+    rate_command_timeout_s: 0.3
+    # 熱調。後備路徑：有人直接送 GUI torque.z（例如 Tuning 頁的手動 wrench）時，
+    # 超過這個值就算操作者在轉，本節點讓手。
+    pilot_yaw_deadband_Nm: 0.05
+    # 放手後等多久才抓目標。太短會抓在載具還在甩的位置，然後被拉回來。
+    pilot_release_delay_s: 0.3
+    pilot_input_timeout_s: 0.3
+    orientation_timeout_s: 0.5
+    # 開機讀
+    controller_loop_timer_period_s: 0.02
+
 # --- Wrench 匯流排 ------------------------------------------------------------
 /**/wrench_sum_node:
   ros__parameters:
@@ -63,6 +94,7 @@
     input_topics:
       - control/wrench_sources/gui       # GUI 手動
       - control/wrench_sources/depth     # 深度 PID
+      - control/wrench_sources/heading   # 航向保持
       - control/wrench_sources/decision  # Autonomy 堆疊（SAUVC-JETSON）
     output_topic: control/wrench_command
     publish_rate: 30.0
@@ -79,6 +111,8 @@
     # 沒有這個檢查的話，Autonomy 掛掉只會讓 wrench_sum 靜默把來源歸零，
     # 載具停住但沒有任何人知道為什麼。
     decision_timeout_s: 1.0
+    # 航向保持啟用中，IMU 姿態超過這個時間沒更新就關掉航向保持（不進 FAULT）。
+    orientation_timeout_s: 1.0
 
     auto_flash_stm32_on_startup: true
     stm32_flash_service: /flash_stm32

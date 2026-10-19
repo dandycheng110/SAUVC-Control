@@ -80,6 +80,8 @@ def _launch_setup(context, *args, **kwargs):
         node('depth_control', 'output_sink_force_to_output_wrench_node',
              'output_sink_force_to_output_wrench_node',
              remappings=[('control/wrench_command', 'control/wrench_sources/depth')]),
+        # 直接發 control/wrench_sources/heading，不需要 remap。
+        node('control', 'heading_hold_node', 'heading_hold_node'),
 
         # --- 致動 -------------------------------------------------------------
         node('wrench_sum', 'wrench_sum_node', 'wrench_sum_node'),

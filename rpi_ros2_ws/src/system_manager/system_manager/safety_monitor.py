@@ -10,6 +10,7 @@ class SafetyMonitor:
         self.have_thrusters_enabled = False
         self.last_depth_stamp = None
         self.last_decision_stamp = None
+        self.last_orientation_stamp = None
 
     def update_killed(self, killed: bool):
         self.killed = killed
@@ -24,6 +25,9 @@ class SafetyMonitor:
 
     def update_decision(self):
         self.last_decision_stamp = self._node.get_clock().now()
+
+    def update_orientation(self):
+        self.last_orientation_stamp = self._node.get_clock().now()
 
     def safety_ready(self):
         if self._require_not_killed():
@@ -63,6 +67,15 @@ class SafetyMonitor:
             return False, "Decision wrench has not been received"
         if self._age_s(self.last_decision_stamp) > timeout_s:
             return False, "Decision wrench is stale"
+        return True, ""
+
+    def orientation_ready(self):
+        """航向保持的前提：IMU 姿態還在更新。"""
+        timeout_s = float(self._node.get_parameter("orientation_timeout_s").value)
+        if self.last_orientation_stamp is None:
+            return False, "Orientation has not been received"
+        if self._age_s(self.last_orientation_stamp) > timeout_s:
+            return False, "Orientation is stale"
         return True, ""
 
     def _require_not_killed(self):

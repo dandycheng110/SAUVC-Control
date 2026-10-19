@@ -15,6 +15,7 @@ class WrenchSum(LifecycleNode):
         self.declare_parameter('input_topics', [
             'control/wrench_sources/gui',
             'control/wrench_sources/depth',
+            'control/wrench_sources/heading',
             'control/wrench_sources/decision',
         ])
         # Output topic name

@@ -25,6 +25,7 @@ setup(
     entry_points={
         'console_scripts': [
             "generic_pid_controller_node = control.generic_pid_controller_node:main",
+            "heading_hold_node = control.heading_hold_node:main",
         ],
     },
 )
