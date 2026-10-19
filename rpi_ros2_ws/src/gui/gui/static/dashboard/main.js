@@ -11,6 +11,7 @@ const $ = (id) => document.getElementById(id);
 // before somebody acts on a frozen number.
 const STALE_MS = {
     [protocol.topics.depthM]: 1500,
+    [protocol.topics.headingDeg]: 1500,
     [protocol.topics.targetDepthM]: 8000,
     [protocol.topics.killed]: 8000,
     [protocol.topics.thrustersEnabled]: 8000,
@@ -25,6 +26,12 @@ const CAMERA_PORT_OVERRIDE =
 const state = {
     mode: null,
     targetDepth: 0,
+    depth: null,
+    // Heading hold is reported apart from the mode (see the supervisor), so it
+    // has its own flag rather than being derived from the mode string.
+    headingHold: false,
+    heading: null,
+    headingTarget: null,
     killed: null,
     cameras: [],
     cameraPort: CAMERA_PORT_OVERRIDE ?? 8080,
@@ -141,7 +148,8 @@ function applyMode(mode) {
 
     // In FAULT the supervisor rejects every enable request, so present them as
     // unavailable rather than letting the operator click into a refusal.
-    for (const id of ["toggle_depth_hold", "toggle_autonomous", "toggle_manual"]) {
+    for (const id of ["toggle_depth_hold", "toggle_heading_hold",
+        "toggle_autonomous", "toggle_manual"]) {
         $(id).setAttribute("aria-disabled", String(faulted));
     }
     $("mode_hint").textContent = faulted
@@ -168,14 +176,34 @@ function pilotingAllowed() {
     return state.mode === protocol.modes.manual || depthHoldActive();
 }
 
+function renderKeyboard(s) {
+    document.querySelectorAll(".key").forEach((el) => {
+        el.classList.toggle("held", s.held.has(el.dataset.key));
+    });
+    document.querySelectorAll("#speed_meter span").forEach((el) => {
+        el.classList.toggle("on", Number(el.dataset.level) <= s.speedLevel);
+    });
+    const fraction = window.KeyboardPilotKeys.SPEED_LEVELS[s.speedLevel - 1];
+    $("speed_label").textContent = `${Math.round(fraction * 100)} %`;
+    setPill("fine_pill", "fine ×0.3", s.fine ? "ok" : "");
+    // Amber on purpose: in cruise the vehicle is moving with no key held.
+    setPill("cruise_pill", "cruise", s.cruise ? "warn" : "");
+    if (s.notice) {
+        toast("Keyboard", s.notice);
+    }
+}
+
 const pilot = new window.KeyboardPilot(socket, protocol, {
     getEnabled: pilotingAllowed,
+    // Depth hold flies to a setpoint, so Q/E walk it. Manual has nothing
+    // holding depth, so there Q/E push straight up and down.
+    getVerticalMode: () => (depthHoldActive() ? "target" : "force"),
+    getYawMode: () => (state.headingHold ? "rate" : "torque"),
     getTargetDepth: () => state.targetDepth,
-    onState: (s) => {
-        document.querySelectorAll(".key").forEach((el) => {
-            el.classList.toggle("held", s.held.has(el.dataset.key));
-        });
-    },
+    getDepth: () => state.depth,
+    getHeading: () => state.heading,
+    getHeadingTarget: () => state.headingTarget,
+    onState: renderKeyboard,
 });
 pilot.start();
 
@@ -186,16 +214,18 @@ function updateKeyboardAvailability() {
     setPill("keyboard_pill", active ? "active" : "inactive", active ? "ok" : "");
 
     if (holding) {
-        $("keyboard_hint").textContent =
-            "WASD steers, Q/E moves the depth target and the PID flies to it.";
+        $("keyboard_hint").textContent = state.headingHold
+            ? "Arrows turn at a set rate and the vehicle stops where you let go. "
+              + "Q/E walk the depth target."
+            : "Q/E walk the depth target. Turn on Heading hold (H) so the "
+              + "vehicle stops turning when you let go of the arrows.";
         $("keyboard_hint").className = "hint";
     } else if (manual) {
-        // Worth saying plainly: MANUAL is the one mode that deactivates the
-        // depth PID, so the setpoint Q/E writes has nothing acting on it.
+        // Worth saying plainly: MANUAL deactivates every controller, so
+        // nothing holds depth or heading and Q/E are raw vertical force.
         $("keyboard_hint").textContent =
-            "WASD steers. Q/E still moves the depth target, but Manual "
-            + "deactivates the depth PID so nothing acts on it — switch to "
-            + "Depth hold to actually change depth.";
+            "Manual: nothing holds depth or heading, and Q/E push straight "
+            + "up/down. Depth hold (plus H for heading hold) is easier to fly.";
         $("keyboard_hint").className = "hint warn";
     } else {
         $("keyboard_hint").textContent =
@@ -203,18 +233,25 @@ function updateKeyboardAvailability() {
         $("keyboard_hint").className = "hint";
     }
     $("kb_vertical_note").textContent = holding
-        ? "depth target" : manual ? "depth target (PID off)" : "unavailable";
+        ? "depth target" : manual ? "force (nothing holds depth)" : "unavailable";
+    $("kb_yaw_note").textContent = !active ? "unavailable"
+        : state.headingHold ? "turn rate, stops on release" : "torque (no heading hold)";
 }
 
-$("kb_force_input").addEventListener("change", (e) => {
-    pilot.translationForceN = Number(e.target.value) || 0;
-});
-$("kb_torque_input").addEventListener("change", (e) => {
-    pilot.yawTorqueNm = Number(e.target.value) || 0;
-});
-$("kb_depth_step_input").addEventListener("change", (e) => {
-    pilot.depthStepM = Number(e.target.value) || 0;
-});
+function bindNumber(id, apply) {
+    $(id).addEventListener("change", (e) => {
+        const value = Number(e.target.value);
+        if (Number.isFinite(value) && value >= 0) {
+            apply(value);
+        }
+    });
+}
+
+bindNumber("kb_force_input", (v) => { pilot.translationForceN = v; });
+bindNumber("kb_torque_input", (v) => { pilot.yawTorqueNm = v; });
+bindNumber("kb_yaw_rate_input", (v) => { pilot.yawRateDps = v; });
+bindNumber("kb_vertical_input", (v) => { pilot.verticalForceN = v; });
+bindNumber("kb_depth_rate_input", (v) => { pilot.depthRateMps = v; });
 
 // -------------------------------------------------------------------- camera
 
@@ -407,7 +444,26 @@ socket.onTopic(protocol.topics.systemManagerStatus, (msg) => {
 });
 
 socket.onTopic(protocol.topics.depthM, (msg) => {
+    state.depth = Number(msg);
     setMetric("depth_value", msg, 2, "m");
+});
+
+socket.onTopic(protocol.topics.headingHold, (msg) => {
+    state.headingHold = msg === true;
+    $("toggle_heading_hold").setAttribute("aria-pressed", String(state.headingHold));
+    updateKeyboardAvailability();
+});
+
+// Both arrive as null when unknown; `?? NaN` keeps fmt() from printing null
+// as a confident 0°.
+socket.onTopic(protocol.topics.headingDeg, (msg) => {
+    state.heading = msg === null ? null : Number(msg);
+    setMetric("heading_value", msg ?? NaN, 0, "°");
+});
+
+socket.onTopic(protocol.topics.headingTargetDeg, (msg) => {
+    state.headingTarget = msg === null ? null : Number(msg);
+    setMetric("heading_target_value", msg ?? NaN, 0, "°");
 });
 
 socket.onTopic(protocol.topics.targetDepthM, (msg) => {
@@ -443,23 +499,29 @@ socket.onTopic(protocol.topics.thrustersPwmUs, (values) => {
     }
 });
 
-socket.onTopic(protocol.topics.depthPidParams, (params) => {
-    const map = {
-        proportional_gain: "p",
-        integral_gain: "i",
-        derivative_gain: "d",
-        derivative_smoothing_factor: "smoothing",
-    };
-    for (const [key, suffix] of Object.entries(map)) {
+const PID_FIELDS = {
+    proportional_gain: "p",
+    integral_gain: "i",
+    derivative_gain: "d",
+    derivative_smoothing_factor: "smoothing",
+};
+
+// `prefix` is "pid" for the depth panel and "hpid" for the heading panel; the
+// two panels use the same element ids apart from that.
+function renderPidParams(prefix, params) {
+    for (const [key, suffix] of Object.entries(PID_FIELDS)) {
         const value = Number((params || {})[key]);
-        const readout = $(`pid_${suffix}_current`);
+        const readout = $(`${prefix}_${suffix}_current`);
         if (readout) readout.textContent = fmt(value, 3);
-        const input = $(`pid_${suffix}_input`);
+        const input = $(`${prefix}_${suffix}_input`);
         if (input && document.activeElement !== input && Number.isFinite(value)) {
             input.value = String(value);
         }
     }
-});
+}
+
+socket.onTopic(protocol.topics.depthPidParams, (params) => renderPidParams("pid", params));
+socket.onTopic(protocol.topics.headingPidParams, (params) => renderPidParams("hpid", params));
 
 socket.onTopic(protocol.topics.serviceResult, (result) => {
     const ok = result?.success === true;
@@ -557,6 +619,10 @@ socket.onConnectionChange((connected) => {
         // sit there looking current. The mission panel is cleared outright
         // rather than left to time out, so a dropped link never leaves a
         // "running" pill on screen for three more seconds.
+        state.headingHold = false;
+        state.heading = null;
+        state.headingTarget = null;
+        $("toggle_heading_hold").setAttribute("aria-pressed", "false");
         applyMode(null);
         state.mission = null;
         renderMission();
@@ -569,6 +635,7 @@ window.setInterval(() => {
     const marks = [
         ["depth_value", protocol.topics.depthM],
         ["target_depth_value", protocol.topics.targetDepthM],
+        ["heading_value", protocol.topics.headingDeg],
     ];
     for (const [id, topic] of marks) {
         $(id)?.classList.toggle("is-stale", socket.isStale(topic, STALE_MS[topic]));
@@ -592,6 +659,7 @@ function toggleHandler(id, action) {
 }
 
 toggleHandler("toggle_depth_hold", protocol.actions.setSupervisorDepthHold);
+toggleHandler("toggle_heading_hold", protocol.actions.setSupervisorHeadingHold);
 toggleHandler("toggle_autonomous", protocol.actions.setSupervisorAutonomousMode);
 toggleHandler("toggle_manual", protocol.actions.setSupervisorManualMode);
 toggleHandler("toggle_simulation", protocol.actions.setSupervisorSimulationMode);
@@ -612,6 +680,18 @@ window.addEventListener("keydown", (e) => {
     if (e.key !== "Escape") return;
     if (!$("confirm_modal").hidden) { closeConfirm(false); return; }
     emergencyStop();
+});
+
+// H toggles heading hold: the one assist an operator flips mid-run, so it
+// gets a key. Same rule as the pilot keys — never while typing into a field.
+window.addEventListener("keydown", (e) => {
+    if (e.code !== "KeyH" || e.repeat || e.ctrlKey || e.metaKey || e.altKey) return;
+    const target = e.target;
+    if (target && (["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName)
+        || target.isContentEditable)) return;
+    if ($("toggle_heading_hold").getAttribute("aria-disabled") === "true") return;
+    socket.sendAction(protocol.actions.setSupervisorHeadingHold,
+        {enabled: !state.headingHold});
 });
 
 $("button_reset_controllers").addEventListener("click", () => {
@@ -652,18 +732,19 @@ $("button_magnet_off").addEventListener("click", () => {
     socket.sendTopic(protocol.topics.electromagnetEnabled, {data: false});
 });
 
+function sendPidParams(group, prefix) {
+    const params = {};
+    for (const [key, suffix] of Object.entries(PID_FIELDS)) {
+        params[key] = $(`${prefix}_${suffix}_input`).value;
+    }
+    socket.sendController(group, protocol.controllerActions.setPidParams, {params});
+}
+
 $("button_set_pid").addEventListener("click", () => {
-    socket.sendController(
-        protocol.controllerGroups.depthControl,
-        protocol.controllerActions.setPidParams,
-        {
-            params: {
-                proportional_gain: $("pid_p_input").value,
-                integral_gain: $("pid_i_input").value,
-                derivative_gain: $("pid_d_input").value,
-                derivative_smoothing_factor: $("pid_smoothing_input").value,
-            },
-        });
+    sendPidParams(protocol.controllerGroups.depthControl, "pid");
+});
+$("button_set_heading_pid").addEventListener("click", () => {
+    sendPidParams(protocol.controllerGroups.headingControl, "hpid");
 });
 
 $("button_send_wrench").addEventListener("click", () => {

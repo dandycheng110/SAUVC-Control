@@ -29,6 +29,9 @@ ACTION_SET_SUPERVISOR_AUTONOMOUS_MODE = "set_supervisor_autonomous_mode"
 # depth hold used to be reachable only through the controller-group message,
 # which made it the one mode the GUI could not present alongside the others.
 ACTION_SET_SUPERVISOR_DEPTH_HOLD = "set_supervisor_depth_hold"
+# Heading hold rides on top of depth hold (see the supervisor), so it is a
+# separate switch rather than another mode.
+ACTION_SET_SUPERVISOR_HEADING_HOLD = "set_supervisor_heading_hold"
 ACTION_SAFE_DISABLE = "safe_disable"
 # Mission start lives in the autonomy stack. The two containers share one ROS
 # graph, so publishing it from here works and saves the operator a shell.
@@ -44,6 +47,7 @@ RECORDER_SERVICE_START = "bag_recorder/start"
 RECORDER_SERVICE_STOP = "bag_recorder/stop"
 
 CONTROLLER_GROUP_DEPTH_CONTROL = "depth_control"
+CONTROLLER_GROUP_HEADING_CONTROL = "heading_control"
 
 CONTROLLER_ACTION_ENABLE = "enable"
 CONTROLLER_ACTION_DISABLE = "disable"
@@ -52,6 +56,8 @@ CONTROLLER_ACTION_SET_PID_PARAMS = "set_pid_params"
 
 SUPERVISOR_SERVICE_DEPTH_HOLD = "depth_hold"
 SUPERVISOR_SERVICE_DISABLE_DEPTH_HOLD = "disable_depth_hold"
+SUPERVISOR_SERVICE_HEADING_HOLD = "heading_hold"
+SUPERVISOR_SERVICE_DISABLE_HEADING_HOLD = "disable_heading_hold"
 SUPERVISOR_SERVICE_AUTONOMOUS = "autonomous"
 SUPERVISOR_SERVICE_DISABLE_AUTONOMOUS = "disable_autonomous"
 SUPERVISOR_SERVICE_RESET_CONTROLLERS = "reset_controllers"
@@ -78,6 +84,20 @@ TOPIC_ELECTROMAGNET_ENABLED = "actuators/electromagnet/enabled"
 TOPIC_WRENCH_COMMAND = "control/wrench_command"
 TOPIC_TARGET_DEPTH_M = "control/targets/depth_m"
 TOPIC_DEPTH_PID_PARAMS = "control/pid/depth/gui_params"
+# --- heading hold ---------------------------------------------------------
+# On/off as the supervisor sees it. Not part of system_manager/mode: heading
+# hold is an assist on top of depth hold, and keeping the mode strings as they
+# were means nothing that already reads them has to change.
+TOPIC_HEADING_HOLD = "system_manager/heading_hold"
+# Published by heading_hold_node whether or not it is active, so the readout
+# works before the hold is switched on. NaN when unknown — relayed as null.
+TOPIC_HEADING_DEG = "state/heading_deg"
+TOPIC_HEADING_TARGET_DEG = "state/heading_target_deg"
+# Browser -> vehicle. An absolute target ([ / ] keys) and a turn rate (arrow
+# keys while heading hold is on — a rate, not a torque; see heading_hold_node).
+TOPIC_TARGET_HEADING_DEG = "control/targets/heading_deg"
+TOPIC_YAW_RATE_DPS = "control/targets/yaw_rate_dps"
+TOPIC_HEADING_PID_PARAMS = "control/pid/heading/gui_params"
 TOPIC_FLASH_STM32_STATUS = "flash_stm32_status"
 
 # --- GUI-only channels (never real ROS topics) -----------------------------

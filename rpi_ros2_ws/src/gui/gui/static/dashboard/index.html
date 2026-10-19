@@ -26,6 +26,14 @@
             <span class="label">Target</span>
             <span class="value" id="target_depth_value">&mdash;<span class="readout-unit">m</span></span>
         </div>
+        <div class="metric">
+            <span class="label">Heading</span>
+            <span class="value" id="heading_value">&mdash;<span class="readout-unit">&deg;</span></span>
+        </div>
+        <div class="metric">
+            <span class="label">Hdg target</span>
+            <span class="value" id="heading_target_value">&mdash;<span class="readout-unit">&deg;</span></span>
+        </div>
 
         <span class="pill" id="kill_pill">Kill &mdash;</span>
         <span class="pill" id="thrusters_pill">Thrusters &mdash;</span>
@@ -75,6 +83,10 @@
                 <button class="toggle" id="toggle_depth_hold" aria-pressed="false">
                     <span class="toggle-dot"></span>Depth hold
                 </button>
+                <button class="toggle" id="toggle_heading_hold" aria-pressed="false"
+                        title="Keep the heading when the arrow keys are let go (H). Needs Depth hold.">
+                    <span class="toggle-dot"></span>Heading hold
+                </button>
                 <button class="toggle" id="toggle_autonomous" aria-pressed="false">
                     <span class="toggle-dot"></span>Autonomy
                 </button>
@@ -93,7 +105,7 @@
                 <input type="number" step="0.05" min="0" id="target_depth_input" aria-label="Target depth in metres">
                 <button id="button_set_depth">Set</button>
             </div>
-                        <div class="hint">Q / E step this by the amount set in Tuning. Depth hold must be on for the PID to fly to it.</div>
+            <div class="hint">Q / E walk this at the depth rate set in Tuning. Depth hold must be on for the PID to fly to it.</div>
         </div>
 
         <!-- ---- mission ---- -->
@@ -191,11 +203,26 @@
                 <div class="key" data-key="ArrowRight">&rarr;</div>
                 <div class="key" data-key="KeyE">E</div>
             </div>
+            <div class="keyboard-status">
+                <div class="speed-meter" id="speed_meter" title="Speed level: keys 1 to 5">
+                    <span data-level="1"></span><span data-level="2"></span><span data-level="3"></span><span data-level="4"></span><span data-level="5"></span>
+                </div>
+                <span class="num" id="speed_label">&mdash;</span>
+                <span class="pill" id="fine_pill">fine &times;0.3</span>
+                <span class="pill" id="cruise_pill">cruise</span>
+            </div>
             <div class="keymap-legend">
                 <kbd>W / S</kbd><span>forward / reverse</span>
                 <kbd>A / D</kbd><span>strafe left / right</span>
-                <kbd>&larr; / &rarr;</kbd><span>yaw left / right</span>
+                <kbd>&larr; / &rarr;</kbd><span>turn &mdash; <b id="kb_yaw_note">unavailable</b></span>
                 <kbd>Q / E</kbd><span>up / down &mdash; <b id="kb_vertical_note">unavailable</b></span>
+                <kbd>1 &hellip; 5</kbd><span>speed level (20 &hellip; 100 %)</span>
+                <kbd>Shift</kbd><span>fine: &times;0.3 while held</span>
+                <kbd>C</kbd><span>cruise: keep going without holding W/A/S/D</span>
+                <kbd>Space</kbd><span>stop moving, hold depth and heading here</span>
+                <kbd>[ / ]</kbd><span>heading &minus;/+15&deg; (Shift: 90&deg;)</span>
+                <kbd>H</kbd><span>heading hold on / off</span>
+                <kbd>Esc</kbd><span>STOP &mdash; disarm</span>
             </div>
             <div class="hint" id="keyboard_hint">Enable Manual to pilot from the keyboard.</div>
         </div>
@@ -233,6 +260,30 @@
     </div>
 
     <div class="panel">
+        <div class="panel-head"><span class="panel-title">Heading PID</span></div>
+        <div class="grid-2">
+            <label class="field"><span class="label">P (N&middot;m/rad)</span>
+                <input type="number" step="any" id="hpid_p_input"></label>
+            <label class="field"><span class="label">I</span>
+                <input type="number" step="any" id="hpid_i_input"></label>
+            <label class="field"><span class="label">D (N&middot;m per rad/s)</span>
+                <input type="number" step="any" id="hpid_d_input"></label>
+            <label class="field"><span class="label">Smoothing</span>
+                <input type="number" step="any" id="hpid_smoothing_input"></label>
+        </div>
+        <div class="grid-2 hint">
+            <span>live P <b class="num" id="hpid_p_current">&mdash;</b></span>
+            <span>live I <b class="num" id="hpid_i_current">&mdash;</b></span>
+            <span>live D <b class="num" id="hpid_d_current">&mdash;</b></span>
+            <span>live S <b class="num" id="hpid_smoothing_current">&mdash;</b></span>
+        </div>
+        <div class="field-row">
+            <button class="primary" id="button_set_heading_pid">Apply</button>
+            <span class="hint">D acts on the measured turn rate, so steps in the target do not kick</span>
+        </div>
+    </div>
+
+    <div class="panel">
         <div class="panel-head"><span class="panel-title">Manual wrench</span></div>
         <div class="grid-3">
             <label class="field"><span class="label">Force X</span>
@@ -258,14 +309,19 @@
         <div class="panel-head"><span class="panel-title">Keyboard strength</span></div>
         <div class="grid-2">
             <label class="field"><span class="label">Translation (N)</span>
-                <input type="number" step="1" min="0" id="kb_force_input" value="20"></label>
-            <label class="field"><span class="label">Yaw (Nm)</span>
-                <input type="number" step="1" min="0" id="kb_torque_input" value="10"></label>
-            <label class="field"><span class="label">Depth step (m)</span>
-                <input type="number" step="0.01" min="0" id="kb_depth_step_input" value="0.05"></label>
+                <input type="number" step="1" min="0" id="kb_force_input" value="40"></label>
+            <label class="field"><span class="label">Vertical, Manual (N)</span>
+                <input type="number" step="1" min="0" id="kb_vertical_input" value="30"></label>
+            <label class="field"><span class="label">Turn rate, heading hold (&deg;/s)</span>
+                <input type="number" step="5" min="0" id="kb_yaw_rate_input" value="90"></label>
+            <label class="field"><span class="label">Yaw torque, no hold (N&middot;m)</span>
+                <input type="number" step="1" min="0" id="kb_torque_input" value="20"></label>
+            <label class="field"><span class="label">Depth rate (m/s)</span>
+                <input type="number" step="0.05" min="0" id="kb_depth_rate_input" value="0.4"></label>
         </div>
         <div class="hint">
-            Applies immediately. Down is positive, so E goes deeper.
+            Full scale, i.e. speed level 5. Levels 1&ndash;5 are 20&ndash;100 % of these and
+            Shift takes 30 % of that. Applies immediately. Down is positive, so E goes deeper.
         </div>
     </div>
 

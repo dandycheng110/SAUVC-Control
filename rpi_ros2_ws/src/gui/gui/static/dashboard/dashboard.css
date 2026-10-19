@@ -236,6 +236,32 @@ main { padding: 16px; flex: 1; }
     color: var(--text-2);
 }
 
+/* speed level, fine and cruise, above the key map */
+.keyboard-status {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+.speed-meter { display: flex; gap: 3px; }
+.speed-meter span {
+    width: 14px;
+    height: 10px;
+    border-radius: 2px;
+    background: var(--surface-2);
+    border: 1px solid var(--border-2);
+}
+.speed-meter span.on {
+    background: var(--accent);
+    border-color: var(--accent);
+}
+#speed_label {
+    font-size: 12px;
+    color: var(--text-2);
+    min-width: 40px;
+    margin-right: auto;
+}
+
 /* ---------- tuning / diagnostics ---------- */
 
 .col-grid {

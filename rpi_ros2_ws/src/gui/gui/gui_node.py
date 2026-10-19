@@ -1,4 +1,5 @@
 import json
+import math
 import os
 
 import rclpy
@@ -75,6 +76,14 @@ class GUINode(Node):
                     "depth": "depth_pid_controller_node",
                 },
             },
+            # heading_hold_node uses the same four parameter names on purpose,
+            # so this whole read/write path works for it unchanged.
+            "heading": {
+                "topic": protocol.TOPIC_HEADING_PID_PARAMS,
+                "nodes": {
+                    "heading": "heading_hold_node",
+                },
+            },
         }
         self._pid_param_state = {
             group_key: {}
@@ -125,6 +134,25 @@ class GUINode(Node):
             )
         # Absolute, and in the autonomy container's /orca prefix rather than
         # this vehicle's namespace — see the note on the constant.
+        self._last_heading_hold = None
+        self._heading_hold_subscriber = self.create_subscription(
+                msg_type=Bool,
+                topic=protocol.TOPIC_HEADING_HOLD,
+                callback=self._heading_hold_callback,
+                qos_profile=10
+            )
+        self._heading_subscriber = self.create_subscription(
+                msg_type=Float64,
+                topic=protocol.TOPIC_HEADING_DEG,
+                callback=lambda msg: self._relay_float(protocol.TOPIC_HEADING_DEG, msg),
+                qos_profile=10
+            )
+        self._heading_target_subscriber = self.create_subscription(
+                msg_type=Float64,
+                topic=protocol.TOPIC_HEADING_TARGET_DEG,
+                callback=lambda msg: self._relay_float(protocol.TOPIC_HEADING_TARGET_DEG, msg),
+                qos_profile=10
+            )
         self._mission_status_subscriber = self.create_subscription(
                 msg_type=String,
                 topic=protocol.ROS_TOPIC_MISSION_STATUS_JSON,
@@ -156,6 +184,14 @@ class GUINode(Node):
             protocol.SUPERVISOR_SERVICE_DISABLE_DEPTH_HOLD: self.create_client(
                 Trigger,
                 "system_manager/disable/depth_hold",
+            ),
+            protocol.SUPERVISOR_SERVICE_HEADING_HOLD: self.create_client(
+                Trigger,
+                "system_manager/set_mode/heading_hold",
+            ),
+            protocol.SUPERVISOR_SERVICE_DISABLE_HEADING_HOLD: self.create_client(
+                Trigger,
+                "system_manager/disable/heading_hold",
             ),
             protocol.SUPERVISOR_SERVICE_AUTONOMOUS: self.create_client(
                 Trigger,
@@ -207,9 +243,18 @@ class GUINode(Node):
             protocol.TOPIC_TARGET_DEPTH_M,
             10,
         )
+        self._float_command_publishers = {
+            protocol.TOPIC_TARGET_HEADING_DEG: self.create_publisher(
+                Float64, protocol.TOPIC_TARGET_HEADING_DEG, 10),
+            protocol.TOPIC_YAW_RATE_DPS: self.create_publisher(
+                Float64, protocol.TOPIC_YAW_RATE_DPS, 10),
+        }
         self._controller_group_axes = {
             protocol.CONTROLLER_GROUP_DEPTH_CONTROL: dict(
                 self._pid_param_groups["depth"]["nodes"]
+            ),
+            protocol.CONTROLLER_GROUP_HEADING_CONTROL: dict(
+                self._pid_param_groups["heading"]["nodes"]
             ),
         }
         self._controller_groups = {
@@ -228,6 +273,18 @@ class GUINode(Node):
             ): protocol.SUPERVISOR_SERVICE_DISABLE_DEPTH_HOLD,
             (
                 protocol.CONTROLLER_GROUP_DEPTH_CONTROL,
+                protocol.CONTROLLER_ACTION_RESET,
+            ): protocol.SUPERVISOR_SERVICE_RESET_CONTROLLERS,
+            (
+                protocol.CONTROLLER_GROUP_HEADING_CONTROL,
+                protocol.CONTROLLER_ACTION_ENABLE,
+            ): protocol.SUPERVISOR_SERVICE_HEADING_HOLD,
+            (
+                protocol.CONTROLLER_GROUP_HEADING_CONTROL,
+                protocol.CONTROLLER_ACTION_DISABLE,
+            ): protocol.SUPERVISOR_SERVICE_DISABLE_HEADING_HOLD,
+            (
+                protocol.CONTROLLER_GROUP_HEADING_CONTROL,
                 protocol.CONTROLLER_ACTION_RESET,
             ): protocol.SUPERVISOR_SERVICE_RESET_CONTROLLERS,
         }
@@ -296,6 +353,17 @@ class GUINode(Node):
     def _target_depth_callback(self, msg: Float64):
         self.aiohttp_server.send_topic(protocol.TOPIC_TARGET_DEPTH_M, msg.data)
 
+    def _relay_float(self, topic_name: str, msg: Float64):
+        # NaN means "unknown" on the ROS side. JSON has no NaN — json.dumps
+        # writes a bare NaN token that the browser's JSON.parse rejects, and
+        # the whole frame is dropped — so it travels as null.
+        value = msg.data if math.isfinite(msg.data) else None
+        self.aiohttp_server.send_topic(topic_name, value)
+
+    def _heading_hold_callback(self, msg: Bool):
+        self._last_heading_hold = bool(msg.data)
+        self.aiohttp_server.send_topic(protocol.TOPIC_HEADING_HOLD, self._last_heading_hold)
+
     def _stm32_log_callback(self, msg: String):
         self.aiohttp_server.send_topic(protocol.TOPIC_STM32_LOG, msg.data)
 
@@ -354,6 +422,9 @@ class GUINode(Node):
         if self._last_mode is not None:
             self.aiohttp_server.send_topic(
                 protocol.TOPIC_SYSTEM_MANAGER_MODE, self._last_mode)
+        if self._last_heading_hold is not None:
+            self.aiohttp_server.send_topic(
+                protocol.TOPIC_HEADING_HOLD, self._last_heading_hold)
 
     def _param_str(self, name: str) -> str:
         return self.get_parameter(name).get_parameter_value().string_value
@@ -655,6 +726,11 @@ class GUINode(Node):
                     self._call_supervisor(protocol.SUPERVISOR_SERVICE_DEPTH_HOLD)
                 else:
                     self._call_supervisor(protocol.SUPERVISOR_SERVICE_DISABLE_DEPTH_HOLD)
+            elif action_name == protocol.ACTION_SET_SUPERVISOR_HEADING_HOLD:
+                if bool(msg_data.get("enabled")):
+                    self._call_supervisor(protocol.SUPERVISOR_SERVICE_HEADING_HOLD)
+                else:
+                    self._call_supervisor(protocol.SUPERVISOR_SERVICE_DISABLE_HEADING_HOLD)
             elif action_name == protocol.ACTION_SAFE_DISABLE:
                 # Emergency stop. safe_disabled clears every controller group,
                 # disables the controllers and deactivates the wrench bus, so
@@ -724,6 +800,18 @@ class GUINode(Node):
                         protocol.TOPIC_TARGET_DEPTH_M,
                         target_depth,
                     )
+
+            if topic_name in self._float_command_publishers:
+                try:
+                    value = float(msg_data[protocol.FIELD_MSG]["data"])
+                    if not math.isfinite(value):
+                        raise ValueError
+                except (KeyError, TypeError, ValueError):
+                    self.get_logger().warning(f"Invalid {topic_name} message: {msg_json_object}")
+                else:
+                    msg = Float64()
+                    msg.data = value
+                    self._float_command_publishers[topic_name].publish(msg)
 
             if topic_name == protocol.TOPIC_ELECTROMAGNET_ENABLED:
                 try:

@@ -25,6 +25,7 @@ const GuiProtocol = Object.freeze({
         setSupervisorManualMode: "set_supervisor_manual_mode",
         setSupervisorAutonomousMode: "set_supervisor_autonomous_mode",
         setSupervisorDepthHold: "set_supervisor_depth_hold",
+        setSupervisorHeadingHold: "set_supervisor_heading_hold",
         safeDisable: "safe_disable",
         startMission: "start_mission",
         stopMission: "stop_mission",
@@ -35,6 +36,7 @@ const GuiProtocol = Object.freeze({
     }),
     controllerGroups: Object.freeze({
         depthControl: "depth_control",
+        headingControl: "heading_control",
     }),
     controllerActions: Object.freeze({
         enable: "enable",
@@ -54,6 +56,14 @@ const GuiProtocol = Object.freeze({
         wrenchCommand: "control/wrench_command",
         targetDepthM: "control/targets/depth_m",
         depthPidParams: "control/pid/depth/gui_params",
+        // Heading hold. headingDeg / headingTargetDeg arrive as null when the
+        // vehicle does not know (no IMU, or the hold is off).
+        headingHold: "system_manager/heading_hold",
+        headingDeg: "state/heading_deg",
+        headingTargetDeg: "state/heading_target_deg",
+        targetHeadingDeg: "control/targets/heading_deg",
+        yawRateDps: "control/targets/yaw_rate_dps",
+        headingPidParams: "control/pid/heading/gui_params",
         flashStm32Status: "flash_stm32_status",
         // GUI-only channels — not real ROS topics.
         serviceResult: "gui/service_result",
