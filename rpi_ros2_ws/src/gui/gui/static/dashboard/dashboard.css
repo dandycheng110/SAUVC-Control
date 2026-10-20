@@ -333,6 +333,80 @@ main { padding: 16px; flex: 1; }
 }
 .hint.warn { color: var(--warn); }
 
+/* ---------- gamepad ---------- */
+
+.gamepad-device {
+    font-size: 12px;
+    color: var(--text-2);
+    overflow-wrap: anywhere;
+}
+.gamepad-bars {
+    display: grid;
+    grid-template-columns: 44px minmax(0, 1fr) 40px;
+    align-items: center;
+    gap: 5px 8px;
+}
+.gamepad-bars .label { font-size: 10px; }
+.gamepad-bars .num {
+    font-size: 12px;
+    color: var(--text-2);
+    text-align: right;
+}
+.gp-track {
+    position: relative;
+    height: 10px;
+    background: var(--surface-2);
+    border: 1px solid var(--border-2);
+    border-radius: 5px;
+    overflow: hidden;
+}
+/* centre line: a stick at rest sits on it */
+.gp-track::after {
+    content: "";
+    position: absolute;
+    left: 50%;
+    top: 0;
+    bottom: 0;
+    width: 1px;
+    background: var(--border-2);
+}
+.gp-fill {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 50%;
+    width: 0;
+    background: var(--accent);
+}
+
+/* The mapping panel spans the tuning grid; its body keeps a readable width. */
+.gpmap-body {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    max-width: 640px;
+}
+.gpmap-grid {
+    display: grid;
+    grid-template-columns: auto repeat(3, minmax(0, 1fr)) auto;
+    gap: 6px 8px;
+    align-items: center;
+}
+.gpmap-grid .label { font-size: 10px; }
+.gpmap-grid select {
+    padding: 4px 6px;
+    font-size: 12px;
+}
+.gpmap-invert {
+    justify-self: center;
+    margin: 0;
+}
+.gpmap-live {
+    font-size: 11px;
+    color: var(--text-2);
+    overflow-wrap: anywhere;
+}
+
 @media (max-width: 1100px) {
     .flight-grid { grid-template-columns: 1fr; }
     .thruster-grid {

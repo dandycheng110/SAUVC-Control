@@ -227,6 +227,30 @@
             <div class="hint" id="keyboard_hint">Enable Manual to pilot from the keyboard.</div>
         </div>
 
+        <!-- ---- gamepad ---- -->
+        <div class="panel">
+            <div class="panel-head">
+                <span class="panel-title">Gamepad</span>
+                <span class="pill" id="gamepad_pill">none</span>
+            </div>
+            <div class="gamepad-device" id="gamepad_device">No gamepad</div>
+            <div class="gamepad-bars" title="What the stick asks for, before the speed level and the ramp">
+                <span class="label">Surge</span>
+                <div class="gp-track"><div class="gp-fill" id="gp_fill_surge"></div></div>
+                <span class="num" id="gp_val_surge">0.00</span>
+                <span class="label">Sway</span>
+                <div class="gp-track"><div class="gp-fill" id="gp_fill_sway"></div></div>
+                <span class="num" id="gp_val_sway">0.00</span>
+                <span class="label">Heave</span>
+                <div class="gp-track"><div class="gp-fill" id="gp_fill_heave"></div></div>
+                <span class="num" id="gp_val_heave">0.00</span>
+                <span class="label">Yaw</span>
+                <div class="gp-track"><div class="gp-fill" id="gp_fill_yaw"></div></div>
+                <span class="num" id="gp_val_yaw">0.00</span>
+            </div>
+            <div class="hint" id="gamepad_hint">Plug a gamepad into this computer and press any button on it.</div>
+        </div>
+
     </div>
 </div>
 </section>
@@ -325,6 +349,40 @@
         </div>
     </div>
 
+    <div class="panel" id="gpmap_panel" style="grid-column: 1 / -1;">
+        <div class="panel-head">
+            <span class="panel-title">Gamepad mapping</span>
+            <span class="panel-note" id="gpmap_note">no gamepad</span>
+        </div>
+        <div class="gpmap-body">
+            <label class="field"><span class="label">Device</span>
+                <select id="gpmap_device" aria-label="Gamepad"></select></label>
+            <div class="gpmap-grid" id="gpmap_roles"></div>
+            <div class="grid-2">
+                <label class="field"><span class="label">Deadman, hold to pilot</span>
+                    <select id="gpmap_deadman"></select></label>
+                <label class="field"><span class="label">Brake, same as Space</span>
+                    <select id="gpmap_brake"></select></label>
+                <label class="field"><span class="label">Deadzone</span>
+                    <input type="number" step="0.01" min="0" max="0.5" id="gpmap_deadzone"></label>
+                <label class="field"><span class="label">Expo (0 = linear)</span>
+                    <input type="number" step="0.05" min="0" max="1" id="gpmap_expo"></label>
+            </div>
+            <div class="gpmap-live mono" id="gpmap_live">&mdash;</div>
+            <div class="field-row">
+                <button id="gpmap_reset">Reset to default</button>
+                <span class="hint">Saved in this browser, per device. Any change disarms the pad.</span>
+            </div>
+            <div class="hint">
+                Move a control and watch the line above to find its axis or button
+                number. Kind <b>trigger</b> reads an axis that rests at &minus;1 as
+                0&hellip;1. Centre <b>at arm</b> takes the pose at the moment the
+                deadman is pressed as neutral &mdash; for a motion grip's tilt. Full
+                stick is the speed level set with keys 1&hellip;5.
+            </div>
+        </div>
+    </div>
+
 </div>
 </section>
 
@@ -407,6 +465,7 @@
 <script src="/static/shared/protocol.js"></script>
 <script src="/static/shared/ws.js"></script>
 <script src="/static/shared/keyboard_control.js"></script>
+<script src="/static/shared/gamepad_pilot.js"></script>
 <script src="/static/dashboard/main.js"></script>
 </body>
 </html>

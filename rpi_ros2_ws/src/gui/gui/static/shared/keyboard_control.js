@@ -37,6 +37,14 @@
 //
 // Held keys are composed every tick, so W+D is a diagonal rather than whichever
 // key won a race.
+//
+// Analog input: a gamepad or motion grip plugs in with setAnalogSource() and is
+// read on this same tick. Its demand is a fraction of full scale per axis and
+// goes through everything above — speed level, ramp, the depth-target walk and
+// the turn-rate path — so a stick asks for the same motion a key does in every
+// mode. A key held on an axis wins over the stick on that axis. Space disarms
+// the source as well, or a stick still deflected would drive off again on the
+// next tick.
 
 const TICK_HZ = 20;
 
@@ -139,6 +147,77 @@ class KeyboardPilot {
         this._wasPublishingWrench = false;
         this._wasPublishingRate = false;
         this._depthTarget = null;
+
+        // Optional analog source, see setAnalogSource().
+        this.analog = null;
+        this._analogError = "";
+        // Space was used as a stop on keydown; its keyup must not act either.
+        this._spaceTaken = false;
+    }
+
+    /**
+     * Plug in an analog source — a gamepad, a motion grip.
+     *
+     *   update(enabled)  called once per tick before anything is read, with
+     *                    whether piloting is allowed right now
+     *   demand()         {surge, sway, heave, yaw} as fractions of full scale
+     *                    (−1 … 1), or null while the source is not live
+     *   disarm(reason)   drop out until the operator re-arms it
+     */
+    setAnalogSource(source) {
+        this.analog = source;
+    }
+
+    /** The analog source's demand clamped to −1 … 1, or null while not live. */
+    _analogLive() {
+        let demand = null;
+        try {
+            demand = this.analog ? this.analog.demand() : null;
+        } catch (error) {
+            this._analogFailed(error);
+        }
+        if (!demand) {
+            return null;
+        }
+        const out = zeroAxes();
+        for (const axis of AXES) {
+            const value = Number(demand[axis]);
+            out[axis] = Number.isFinite(value) ? Math.max(-1, Math.min(1, value)) : 0;
+        }
+        return out;
+    }
+
+    /** The same, with zeros when the source has nothing. */
+    _analogDemand() {
+        return this._analogLive() || zeroAxes();
+    }
+
+    // A broken analog source must never take the keys or the stop path down
+    // with it: drop it to disarmed and carry on. Logged once per error.
+    _analogFailed(error) {
+        const text = String(error && error.message || error);
+        if (text !== this._analogError) {
+            this._analogError = text;
+            console.error("gui: analog source failed", error);
+        }
+        try {
+            this.analog.disarm("the gamepad code failed");
+        } catch (ignored) {
+            // Nothing more to do; demand() is not trusted until it recovers.
+        }
+    }
+
+    /** Anything the operator would expect Space to stop. */
+    _moving() {
+        return this.held.size > 0 || this.cruise !== null
+            || AXES.some((axis) => this.output[axis] !== 0)
+            || this._analogLive() !== null;
+    }
+
+    /** Measured depth, or NaN while unknown — Number(null) would read 0 m. */
+    _measuredDepth() {
+        const depth = this.getDepth();
+        return depth === null || depth === undefined ? NaN : Number(depth);
     }
 
     start() {
@@ -198,25 +277,48 @@ class KeyboardPilot {
             || target.isContentEditable;
     }
 
-    _onKeyDown = (event) => {
-        // Never steal keys from a number field — the operator is typing a gain,
-        // not asking the vehicle to strafe.
-        if (this._isTypingTarget(event.target)) {
-            return;
+    /** True where Space types a character: a text field, nothing else. */
+    _spaceTypes(target) {
+        if (!target) {
+            return false;
         }
+        if (target.isContentEditable || target.tagName === "TEXTAREA") {
+            return true;
+        }
+        if (target.tagName !== "INPUT") {
+            return false;
+        }
+        const type = String(target.type || "text").toLowerCase();
+        return ["text", "search", "email", "url", "tel", "password"].includes(type);
+    }
+
+    _onKeyDown = (event) => {
         if (event.ctrlKey || event.metaKey || event.altKey) {
             return;
         }
         const code = event.code;
 
-        // Space is always ours. Left to the browser it scrolls the page or —
-        // worse — clicks whichever button last had focus, which after arming
-        // is a mode toggle.
+        // Space is ours wherever it would not type a character. Left to the
+        // browser it scrolls the page or — worse — clicks, flips or opens
+        // whatever has the focus: a mode toggle after arming, an invert box in
+        // the gamepad mapping, which a reflex Space would flip with nobody
+        // noticing. Space is a stop, wherever the focus happens to be. Only
+        // in a text field does it type, and even there not while anything is
+        // moving: a stop that depends on where the caret is, is not a stop.
         if (code === "Space") {
+            if (this._spaceTypes(event.target) && !this._moving()) {
+                return;
+            }
             event.preventDefault();
+            this._spaceTaken = true;
             if (!event.repeat && this.getEnabled()) {
                 this.stopMoving();
             }
+            return;
+        }
+        // Never steal other keys from a field — the operator is typing a gain,
+        // not asking the vehicle to strafe.
+        if (this._isTypingTarget(event.target)) {
             return;
         }
         if (event.repeat) {
@@ -264,9 +366,10 @@ class KeyboardPilot {
     };
 
     _onKeyUp = (event) => {
-        if (event.code === "Space" && !this._isTypingTarget(event.target)) {
-            // Buttons fire their click on Space *up*; swallow that too.
+        if (event.code === "Space" && this._spaceTaken) {
+            // Buttons and checkboxes act on Space *up*; swallow that too.
             event.preventDefault();
+            this._spaceTaken = false;
         }
         if (this.held.delete(event.code)) {
             this._emitState();
@@ -288,12 +391,17 @@ class KeyboardPilot {
 
     /** Space: zero every axis now and hold the depth and heading we are at. */
     stopMoving() {
+        if (this.analog) {
+            this.analog.disarm("stopped (Space or the brake button)");
+        }
         this._releaseAll();
         this.output = zeroAxes();
         this._publish();
 
         if (this.getVerticalMode() === "target") {
-            const depth = Number(this.getDepth());
+            // Unknown depth (nothing received yet) holds nothing, rather than
+            // a target of 0 m that would send the vehicle to the surface.
+            const depth = this._measuredDepth();
             if (Number.isFinite(depth)) {
                 this._sendDepthTarget(Math.max(0, depth));
             }
@@ -356,26 +464,53 @@ class KeyboardPilot {
     /** What every axis is asked for, as a fraction of full scale. */
     demand() {
         const keys = this._keyDirections();
+        const live = this._analogLive();
+        const analog = live || zeroAxes();
+        // An armed stick takes the vehicle back from cruise, as W/A/S/D do.
+        // Otherwise letting go of the deadman — the pad's "stop" — would leave
+        // the vehicle cruising on.
+        if (this.cruise && live) {
+            this.cruise = null;
+        }
         if (this.cruise) {
             if (keys.surge === 0) keys.surge = this.cruise.surge;
             if (keys.sway === 0) keys.sway = this.cruise.sway;
         }
-        // In Depth hold, Q/E move the setpoint instead (see _stepDepthTarget).
-        if (this.getVerticalMode() !== "force") {
-            keys.heave = 0;
-        }
         const scale = this.scale();
         const demand = {};
         for (const axis of AXES) {
-            demand[axis] = keys[axis] * scale;
+            // A held key wins on its own axis: it is a deliberate full-scale
+            // request, where a stick may only be resting a little off centre.
+            demand[axis] = (keys[axis] !== 0 ? keys[axis] : analog[axis]) * scale;
+        }
+        // In Depth hold, Q/E and the stick move the setpoint instead (see
+        // _stepDepthTarget).
+        if (this.getVerticalMode() !== "force") {
+            demand.heave = 0;
         }
         return demand;
+    }
+
+    /** Q/E as −1 / 0 / +1, or the stick's heave when neither key is held. */
+    _heaveDirection() {
+        const key = this._keyDirections().heave;
+        return key !== 0 ? key : this._analogDemand().heave;
     }
 
     _tick = () => {
         const now = performance.now();
         const dt = Math.min(0.2, (now - this._lastTick) / 1000);
         this._lastTick = now;
+
+        // Read the analog source on this clock, so the stick and the keys are
+        // sampled together and nothing drives the vehicle off a second timer.
+        if (this.analog) {
+            try {
+                this.analog.update(this.getEnabled());
+            } catch (error) {
+                this._analogFailed(error);
+            }
+        }
 
         if (!this.getEnabled()) {
             // Left the piloting modes (or the link dropped): stop at once.
@@ -426,7 +561,7 @@ class KeyboardPilot {
     }
 
     _stepDepthTarget(dt) {
-        const direction = this._keyDirections().heave;
+        const direction = this._heaveDirection();
         if (this.getVerticalMode() !== "target" || direction === 0) {
             this._depthTarget = null;
             return;
@@ -436,7 +571,7 @@ class KeyboardPilot {
             this._depthTarget = Number.isFinite(current) ? current : 0;
         }
         let next = this._depthTarget + direction * this.depthRateMps * this.scale() * dt;
-        const depth = Number(this.getDepth());
+        const depth = this._measuredDepth();
         if (Number.isFinite(depth)) {
             next = direction > 0
                 ? Math.min(next, Math.max(this._depthTarget, depth + DEPTH_TARGET_MAX_LEAD_M))

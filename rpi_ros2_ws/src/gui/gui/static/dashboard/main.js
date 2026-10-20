@@ -171,9 +171,11 @@ function depthHoldActive() {
 // the GUI wrench really is summed in DEPTH_HOLD too, verified on the running
 // stack: force.x 20 arrived at control/wrench_command next to the PID's
 // force.z. Deliberately not enabled in the autonomous modes, where piloting
-// would silently fight the decision node on the same bus.
+// would silently fight the decision node on the same bus — and that includes
+// AUTONOMOUS_AND_DEPTH_HOLD, which depthHoldActive() counts as holding depth.
 function pilotingAllowed() {
-    return state.mode === protocol.modes.manual || depthHoldActive();
+    return state.mode === protocol.modes.manual
+        || state.mode === protocol.modes.depthHold;
 }
 
 function renderKeyboard(s) {
@@ -209,11 +211,17 @@ pilot.start();
 
 function updateKeyboardAvailability() {
     const manual = state.mode === protocol.modes.manual;
-    const holding = depthHoldActive();
     const active = pilotingAllowed();
+    const holding = active && depthHoldActive();
+    const autonomous = state.mode === protocol.modes.autonomous
+        || state.mode === protocol.modes.autonomousAndDepthHold;
     setPill("keyboard_pill", active ? "active" : "inactive", active ? "ok" : "");
 
-    if (holding) {
+    if (autonomous) {
+        $("keyboard_hint").textContent =
+            "Autonomy is flying. Keys and the gamepad are off until you leave Autonomy.";
+        $("keyboard_hint").className = "hint";
+    } else if (holding) {
         $("keyboard_hint").textContent = state.headingHold
             ? "Arrows turn at a set rate and the vehicle stops where you let go. "
               + "Q/E walk the depth target."
@@ -252,6 +260,268 @@ bindNumber("kb_torque_input", (v) => { pilot.yawTorqueNm = v; });
 bindNumber("kb_yaw_rate_input", (v) => { pilot.yawRateDps = v; });
 bindNumber("kb_vertical_input", (v) => { pilot.verticalForceN = v; });
 bindNumber("kb_depth_rate_input", (v) => { pilot.depthRateMps = v; });
+
+// ------------------------------------------------------------------- gamepad
+//
+// The pad is read on the keyboard pilot's tick (shared/gamepad_pilot.js), so
+// it shares the speed level, the ramp and Space with the keys. This section
+// only draws it: status and stick bars on Flight, the mapping on Tuning.
+
+const GAMEPAD_PILL = {
+    none: ["none", ""],
+    unmapped: ["not mapped", "warn"],
+    idle: ["ready", ""],
+    blocked: ["not armed", "warn"],
+    armed: ["armed", "ok"],
+    stale: ["no data", "crit"],
+};
+
+function gamepadHint(s) {
+    const deadman = s.profile ? gamepad.buttonName(s.profile.deadman) : "";
+    const brakeName = s.profile ? gamepad.buttonName(s.profile.brake) : "";
+    // Starts a sentence, so "button 1" needs its capital.
+    const brake = s.profile && s.profile.brake >= 0
+        ? ` ${brakeName[0].toUpperCase()}${brakeName.slice(1)} stops and holds here, like Space.`
+        : "";
+    switch (s.status) {
+    case "none":
+        return "Plug a gamepad into this computer and press any button on it. "
+            + "Browsers keep a gamepad hidden until one is pressed.";
+    case "unmapped":
+        return `Not mapped: ${s.reason}. Set it up in Tuning → Gamepad mapping.`;
+    case "stale":
+        return `Stopped: ${s.reason}. Check the cable or battery, then let go `
+            + `of ${deadman} and press it again.`;
+    case "blocked":
+        return `Not armed: ${s.reason}. Let go of ${deadman} and press it again.`;
+    case "armed":
+        return `Piloting. Let go of ${deadman} to stop.${brake}`;
+    default:
+        return (s.reason ? `Ready, but ${s.reason}. ` : "")
+            + `Hold ${deadman} to pilot.${brake}`
+            + (s.lastStop ? ` Last stop: ${s.lastStop}.` : "");
+    }
+}
+
+let gamepadWasArmed = false;
+
+function renderGamepad(s) {
+    // On arming, take the focus out of any field. Otherwise a caret left in
+    // the depth box keeps H and the other keys from reaching the pilot.
+    if (s.status === "armed" && !gamepadWasArmed) {
+        const el = document.activeElement;
+        if (el && ["INPUT", "SELECT", "TEXTAREA"].includes(el.tagName)) {
+            el.blur();
+        }
+    }
+    gamepadWasArmed = s.status === "armed";
+
+    const [label, tone] = GAMEPAD_PILL[s.status] || [s.status, ""];
+    setPill("gamepad_pill", label, tone);
+    $("gamepad_device").textContent = s.pad
+        ? `${s.pad.id} · ${s.saved ? "saved mapping" : s.profile.name}`
+        : "No gamepad";
+    for (const role of window.GamepadPilotKit.ROLES) {
+        const value = s.demand[role] || 0;
+        const fill = $(`gp_fill_${role}`);
+        fill.style.left = `${50 + Math.min(0, value) * 50}%`;
+        fill.style.width = `${Math.abs(value) * 50}%`;
+        $(`gp_val_${role}`).textContent = fmt(value, 2);
+    }
+    const hint = $("gamepad_hint");
+    hint.textContent = gamepadHint(s);
+    hint.className = ["blocked", "unmapped", "stale"].includes(s.status)
+        ? "hint warn" : "hint";
+    renderGamepadMapping(s);
+}
+
+// The mapping form is rebuilt only when the pad or its shape changes, or after
+// a reset — never on every tick, which would yank a list out from under the
+// operator's pointer while they pick from it.
+let gamepadMapSignature = null;
+let gamepadMapEpoch = 0;
+
+function fillSelect(select, options, value) {
+    select.innerHTML = "";
+    for (const [optionValue, text] of options) {
+        const option = document.createElement("option");
+        option.value = optionValue;
+        option.textContent = text;
+        select.appendChild(option);
+    }
+    select.value = value;
+    if (select.value !== value) {
+        // A saved mapping can name an axis this pad lacks. Show it as unset
+        // rather than quietly picking whatever is first.
+        select.value = options[0][0];
+    }
+}
+
+function gamepadIndexOptions(count, noun) {
+    const options = [["-1", noun === "button" ? "none" : "—"]];
+    for (let i = 0; i < count; i += 1) {
+        // Axes are bare numbers: the column head says what they are, and the
+        // grid has no room for more.
+        options.push([String(i), noun === "button" ? gamepad.buttonName(i) : String(i)]);
+    }
+    return options;
+}
+
+function buildGamepadMapping(s) {
+    const profile = s.profile || window.GamepadPilotKit.blankProfile();
+    const axisCount = s.raw ? s.raw.axes.length : 0;
+    const buttonCount = s.raw ? s.raw.pressed.length : 0;
+    const grid = $("gpmap_roles");
+    grid.innerHTML = "";
+    for (const text of ["", "Axis", "Kind", "Centre", "Invert"]) {
+        const head = document.createElement("span");
+        head.className = "label";
+        head.textContent = text;
+        grid.appendChild(head);
+    }
+    for (const role of window.GamepadPilotKit.ROLES) {
+        const mapping = profile.roles[role];
+        const name = document.createElement("span");
+        name.className = "label";
+        name.textContent = role;
+        const axis = document.createElement("select");
+        axis.id = `gpmap_axis_${role}`;
+        axis.setAttribute("aria-label", `${role} axis`);
+        fillSelect(axis, gamepadIndexOptions(axisCount, "axis"), String(mapping.axis));
+        const kind = document.createElement("select");
+        kind.id = `gpmap_range_${role}`;
+        kind.setAttribute("aria-label", `${role} kind`);
+        fillSelect(kind, [["stick", "stick"], ["trigger", "trigger"]], mapping.range);
+        const centre = document.createElement("select");
+        centre.id = `gpmap_center_${role}`;
+        centre.setAttribute("aria-label", `${role} centre`);
+        fillSelect(centre, [["fixed", "fixed"], ["arm", "at arm"]], mapping.center);
+        const invert = document.createElement("input");
+        invert.type = "checkbox";
+        invert.className = "gpmap-invert";
+        invert.id = `gpmap_invert_${role}`;
+        invert.setAttribute("aria-label", `${role} invert`);
+        invert.checked = mapping.invert;
+        grid.append(name, axis, kind, centre, invert);
+    }
+    fillSelect($("gpmap_deadman"), gamepadIndexOptions(buttonCount, "button"),
+        String(profile.deadman));
+    fillSelect($("gpmap_brake"), gamepadIndexOptions(buttonCount, "button"),
+        String(profile.brake));
+    $("gpmap_deadzone").value = String(profile.deadzone);
+    $("gpmap_expo").value = String(profile.expo);
+    for (const el of $("gpmap_panel").querySelectorAll("select, input, button")) {
+        if (el.id !== "gpmap_device") {
+            el.disabled = !s.pad;
+        }
+    }
+}
+
+function gamepadLiveLine(raw, streaming) {
+    const axes = raw.axes
+        .map((v, i) => `${i}:${v >= 0 ? "+" : ""}${v.toFixed(2)}`).join(" ");
+    const held = raw.pressed.map((p, i) => (p ? i : -1)).filter((i) => i >= 0);
+    // Whether the silence check applies to this pad: only one that keeps
+    // reporting while nobody moves it can be told apart from a dead one.
+    return `axes ${axes}   buttons held ${held.length ? held.join(" ") : "none"}`
+        + `   reports ${streaming ? "continuously (stops if silent 0.5 s)" : "on change"}`;
+}
+
+function renderGamepadMapping(s) {
+    const device = $("gpmap_device");
+    const padsSignature = s.pads.map((p) => `${p.index}:${p.id}`).join("|");
+    if (device.dataset.signature !== padsSignature) {
+        device.dataset.signature = padsSignature;
+        fillSelect(device,
+            s.pads.length
+                ? s.pads.map((p) => [String(p.index), `#${p.index} ${p.id}`])
+                : [["", "no gamepad"]],
+            s.pad ? String(s.pad.index) : "");
+        device.disabled = s.pads.length < 2;
+    }
+    if (s.pad && document.activeElement !== device) {
+        device.value = String(s.pad.index);
+    }
+
+    const signature = s.pad
+        ? `${s.pad.index}|${s.pad.id}|${s.raw.axes.length}|${s.raw.pressed.length}|${gamepadMapEpoch}`
+        : "none";
+    if (signature !== gamepadMapSignature) {
+        gamepadMapSignature = signature;
+        buildGamepadMapping(s);
+    }
+    $("gpmap_note").textContent = !s.pad ? "no gamepad"
+        : s.saved ? "saved for this device" : s.profile.name;
+    $("gpmap_live").textContent = s.raw
+        ? gamepadLiveLine(s.raw, s.streaming)
+        : "Plug in a gamepad and press any button on it.";
+}
+
+// Values go over as the strings the form holds: the profile sanitiser reads a
+// blank field as "unset", where Number("") would have made it 0.
+function readGamepadMapping() {
+    const roles = {};
+    for (const role of window.GamepadPilotKit.ROLES) {
+        roles[role] = {
+            axis: $(`gpmap_axis_${role}`).value,
+            range: $(`gpmap_range_${role}`).value,
+            center: $(`gpmap_center_${role}`).value,
+            invert: $(`gpmap_invert_${role}`).checked,
+        };
+    }
+    return {
+        name: "custom",
+        roles,
+        deadzone: $("gpmap_deadzone").value,
+        expo: $("gpmap_expo").value,
+        deadman: $("gpmap_deadman").value,
+        brake: $("gpmap_brake").value,
+    };
+}
+
+// Set up inside a try: a page whose gamepad script failed to load — a deploy
+// half done, a stale cache — must still get STOP, Esc and the websocket below.
+let gamepad = null;
+try {
+    gamepad = new window.GamepadPilot({
+        onState: renderGamepad,
+        // The brake button is Space on the pad, and like Space it only acts
+        // while piloting. The pad disarms itself either way.
+        onBrake: () => {
+            if (pilotingAllowed()) {
+                pilot.stopMoving();
+            }
+        },
+    });
+    pilot.setAnalogSource(gamepad);
+
+    $("gpmap_panel").addEventListener("change", (event) => {
+        if (event.target.id === "gpmap_device") {
+            gamepad.selectPad(Number(event.target.value));
+            return;
+        }
+        gamepad.saveProfile(readGamepadMapping());
+        // Show what was kept: blank or out-of-range numbers come back
+        // replaced or clamped.
+        const saved = gamepad.profile();
+        if (saved) {
+            $("gpmap_deadzone").value = String(saved.deadzone);
+            $("gpmap_expo").value = String(saved.expo);
+        }
+    });
+
+    $("gpmap_reset").addEventListener("click", () => {
+        gamepad.resetProfile();
+        gamepadMapEpoch += 1;
+    });
+} catch (error) {
+    console.error("gui: gamepad setup failed", error);
+    if (gamepad) {
+        // Half set up is worse than not at all: take it off the pilot.
+        pilot.setAnalogSource(null);
+    }
+    toast("Gamepad unavailable", String(error && error.message || error), "crit");
+}
 
 // -------------------------------------------------------------------- camera
 
